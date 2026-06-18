@@ -98,6 +98,28 @@ struct LiquidGlass {
         shadowOverlay: true,
     )
 
+    static let tabBarLens = Self.init(
+        shaderUniforms: .init(
+            materialTint: .init(x: 1.0, y: 1.0, z: 1.0, w: 0.02),
+            glassThickness: 2.4,
+            refractiveIndex: 1.012,
+            dispersionStrength: 2,
+            fresnelDistanceRange: 58,
+            fresnelIntensity: 0.46,
+            fresnelEdgeSharpness: -0.03,
+            glareDistanceRange: 24,
+            glareAngleConvergence: 0.20,
+            glareOppositeSideBias: 1.25,
+            glareIntensity: 0.72,
+            glareEdgeSharpness: -0.04,
+            glareDirectionOffset: -.pi / 4,
+        ),
+        backgroundTextureSizeCoefficient: 1.0,
+        backgroundTextureScaleCoefficient: 1.0,
+        backgroundTextureBlurRadius: 0,
+        shadowOverlay: true,
+    )
+
     static let regular = Self.init(
         shaderUniforms: .init(
             glassThickness: 10,

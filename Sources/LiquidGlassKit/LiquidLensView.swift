@@ -12,6 +12,10 @@ internal import MetalKit
 /// Provides a resting state with a semi-transparent white pill that morphs
 /// into a LiquidGlassView when lifted.
 public final class LiquidLensView: UIView, AnyLiquidLensView {
+    public enum Preset {
+        case standard
+        case tabBar
+    }
 
     // MARK: - Acceleration Constants
     
@@ -19,7 +23,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     private let accelerationWindowDuration: TimeInterval = 0.3
 
     /// Coefficient to convert acceleration to scale transform.
-    private let accelerationScaleCoefficient: CGFloat = 0.00005
+    private let accelerationScaleCoefficient: CGFloat = 0.00000 // Disabled to prevent unintended shrinking
     
     /// Maximum scale deviation from 1.0 (clamped for visual stability).
     private let maxScaleDeviation: CGFloat = 0.3
@@ -48,6 +52,9 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     
     /// Whether the view warps content below it.
     private var warpsContentBelow: Bool = false
+
+    /// The visual preset used by this lens instance.
+    private let preset: Preset
     
     // MARK: - Private Views
     
@@ -55,7 +62,11 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     private let restingPillView = UIView()
     
     /// The liquid glass view shown when lifted.
-    private let liquidGlassView = LiquidGlassView(.lens)
+    private let liquidGlassView: LiquidGlassView
+
+    /// Extra UIKit-drawn lens chrome for tab bars. The shader supplies refraction;
+    /// this supplies the thin highlights and prismatic rim that make it read as glass.
+    private let tabBarChromeView: TabBarLensChromeView?
     
     // MARK: - Protocol Properties
     
@@ -67,10 +78,27 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     // MARK: - Initialization
     
     convenience public init() {
-        self.init(restingBackground: nil)
+        self.init(restingBackground: nil, preset: .standard)
+    }
+
+    convenience public init(preset: Preset) {
+        self.init(restingBackground: nil, preset: preset)
     }
     
-    public init(restingBackground backgroundView: UIView?) {
+    public convenience init(restingBackground backgroundView: UIView?) {
+        self.init(restingBackground: backgroundView, preset: .standard)
+    }
+
+    public init(restingBackground backgroundView: UIView?, preset: Preset) {
+        self.preset = preset
+        switch preset {
+        case .standard:
+            liquidGlassView = LiquidGlassView(.lens)
+            tabBarChromeView = nil
+        case .tabBar:
+            liquidGlassView = LiquidGlassView(.tabBarLens)
+            tabBarChromeView = TabBarLensChromeView()
+        }
         super.init(frame: .zero)
         commonInit()
         if let backgroundView {
@@ -79,6 +107,9 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
     }
     
     required init?(coder: NSCoder) {
+        preset = .standard
+        liquidGlassView = LiquidGlassView(.lens)
+        tabBarChromeView = nil
         super.init(coder: coder)
         commonInit()
     }
@@ -95,6 +126,8 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         liquidGlassView.alpha = 0
         liquidGlassView.isUserInteractionEnabled = false
         // Not added to view hierarchy initially - only shown when lifted
+
+        tabBarChromeView?.alpha = 0
     }
     
     // MARK: - Layout
@@ -109,6 +142,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         // Update liquid glass view to same bounds
 //        liquidGlassView.frame = bounds
 //        liquidGlassView.layer.cornerRadius = min(bounds.width, bounds.height) / 2
+        tabBarChromeView?.frame = liquidGlassView.superview == nil ? bounds : liquidGlassView.frame
     }
     
     // MARK: - Protocol Methods
@@ -160,7 +194,15 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         liquidGlassView.frame = bounds
         liquidGlassView.layer.cornerRadius = restingPillView.layer.cornerRadius
         liquidGlassView.alpha = 0
+        liquidGlassView.removeFromSuperview()
         addSubview(liquidGlassView)
+
+        if let tabBarChromeView {
+            tabBarChromeView.frame = bounds
+            tabBarChromeView.alpha = 0
+            tabBarChromeView.removeFromSuperview()
+            addSubview(tabBarChromeView)
+        }
         
         // Start position tracking for acceleration-based squash/stretch
         startPositionTracking()
@@ -171,6 +213,8 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
 
             // Fade in liquid glass
             self.liquidGlassView.alpha = 1
+
+            self.tabBarChromeView?.alpha = 1
             
             alongsideAnimations?()
         }
@@ -210,6 +254,8 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
             
             // Fade out liquid glass
             self.liquidGlassView.alpha = 0
+
+            self.tabBarChromeView?.alpha = 0
             
             alongsideAnimations?()
         }
@@ -222,6 +268,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
             // Clean up liquid glass view
             self.liquidGlassView.removeFromSuperview()
             self.liquidGlassView.alpha = 1
+            self.tabBarChromeView?.removeFromSuperview()
             completion?(finished)
         }
         
@@ -255,6 +302,7 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
         positionHistory.removeAll()
         // Reset liquidGlassView to original bounds
         liquidGlassView.frame = bounds
+        tabBarChromeView?.frame = bounds
     }
     
     @objc private func updatePositionTracking() {
@@ -351,6 +399,165 @@ public final class LiquidLensView: UIView, AnyLiquidLensView {
             width: newWidth,
             height: newHeight
         )
+        tabBarChromeView?.frame = liquidGlassView.frame
+    }
+}
+
+private final class TabBarLensChromeView: UIView {
+    private let fillLayer = CAGradientLayer()
+    private let rimLayer = CAGradientLayer()
+    private let rimMaskLayer = CAShapeLayer()
+    private let softRimLayer = CAGradientLayer()
+    private let softRimMaskLayer = CAShapeLayer()
+    private let topGlintLayer = CAGradientLayer()
+    private let bottomGlintLayer = CAGradientLayer()
+    private let rightBloomLayer = CAGradientLayer()
+    private let rightBloomMaskLayer = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        clipsToBounds = false
+        layer.masksToBounds = false
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.10
+        layer.shadowRadius = 12
+        layer.shadowOffset = CGSize(width: 0, height: 7)
+
+        fillLayer.colors = [
+            UIColor.white.withAlphaComponent(0.20).cgColor,
+            UIColor.white.withAlphaComponent(0.06).cgColor,
+            UIColor.white.withAlphaComponent(0.15).cgColor
+        ]
+        fillLayer.locations = [0, 0.48, 1]
+        fillLayer.startPoint = CGPoint(x: 0.18, y: 0)
+        fillLayer.endPoint = CGPoint(x: 0.85, y: 1)
+        layer.addSublayer(fillLayer)
+
+        softRimLayer.colors = [
+            UIColor.white.withAlphaComponent(0.35).cgColor,
+            UIColor(red: 1.0, green: 0.90, blue: 0.66, alpha: 0.22).cgColor,
+            UIColor(red: 0.57, green: 0.90, blue: 1.0, alpha: 0.38).cgColor,
+            UIColor.white.withAlphaComponent(0.24).cgColor
+        ]
+        softRimLayer.locations = [0, 0.36, 0.74, 1]
+        softRimLayer.startPoint = CGPoint(x: 0, y: 0)
+        softRimLayer.endPoint = CGPoint(x: 1, y: 1)
+        softRimLayer.mask = softRimMaskLayer
+        layer.addSublayer(softRimLayer)
+
+        rimLayer.colors = [
+            UIColor.white.withAlphaComponent(0.92).cgColor,
+            UIColor.white.withAlphaComponent(0.34).cgColor,
+            UIColor(red: 1.0, green: 0.88, blue: 0.55, alpha: 0.50).cgColor,
+            UIColor(red: 0.48, green: 0.87, blue: 1.0, alpha: 0.58).cgColor,
+            UIColor.white.withAlphaComponent(0.84).cgColor
+        ]
+        rimLayer.locations = [0, 0.28, 0.52, 0.78, 1]
+        rimLayer.startPoint = CGPoint(x: 0.06, y: 0)
+        rimLayer.endPoint = CGPoint(x: 1, y: 1)
+        rimLayer.mask = rimMaskLayer
+        layer.addSublayer(rimLayer)
+
+        topGlintLayer.colors = [
+            UIColor.white.withAlphaComponent(0).cgColor,
+            UIColor.white.withAlphaComponent(0.70).cgColor,
+            UIColor.white.withAlphaComponent(0.18).cgColor,
+            UIColor.white.withAlphaComponent(0).cgColor
+        ]
+        topGlintLayer.locations = [0, 0.22, 0.78, 1]
+        topGlintLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        topGlintLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.addSublayer(topGlintLayer)
+
+        bottomGlintLayer.colors = [
+            UIColor(red: 0.40, green: 0.82, blue: 1.0, alpha: 0).cgColor,
+            UIColor(red: 0.40, green: 0.82, blue: 1.0, alpha: 0.34).cgColor,
+            UIColor.white.withAlphaComponent(0.60).cgColor,
+            UIColor(red: 0.40, green: 0.82, blue: 1.0, alpha: 0.28).cgColor,
+            UIColor(red: 0.40, green: 0.82, blue: 1.0, alpha: 0).cgColor
+        ]
+        bottomGlintLayer.locations = [0, 0.18, 0.52, 0.82, 1]
+        bottomGlintLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        bottomGlintLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.addSublayer(bottomGlintLayer)
+
+        rightBloomLayer.colors = [
+            UIColor.white.withAlphaComponent(0).cgColor,
+            UIColor(red: 0.95, green: 0.76, blue: 1.0, alpha: 0.18).cgColor,
+            UIColor(red: 0.44, green: 0.88, blue: 1.0, alpha: 0.24).cgColor,
+            UIColor.white.withAlphaComponent(0).cgColor
+        ]
+        rightBloomLayer.locations = [0, 0.42, 0.78, 1]
+        rightBloomLayer.startPoint = CGPoint(x: 0, y: 0)
+        rightBloomLayer.endPoint = CGPoint(x: 1, y: 1)
+        rightBloomLayer.mask = rightBloomMaskLayer
+        layer.addSublayer(rightBloomLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        let cornerRadius = bounds.height / 2
+        let fillFrame = bounds.insetBy(dx: 1.0, dy: 1.0)
+        fillLayer.frame = bounds
+        fillLayer.cornerRadius = cornerRadius
+
+        let rimFrame = bounds.insetBy(dx: 1.0, dy: 1.0)
+        let rimPath = UIBezierPath(
+            roundedRect: rimFrame,
+            cornerRadius: max(0, cornerRadius - 1.0)
+        ).cgPath
+        rimLayer.frame = bounds
+        rimMaskLayer.path = rimPath
+        rimMaskLayer.fillColor = UIColor.clear.cgColor
+        rimMaskLayer.strokeColor = UIColor.black.cgColor
+        rimMaskLayer.lineWidth = 1.6
+
+        softRimLayer.frame = bounds
+        softRimMaskLayer.path = UIBezierPath(
+            roundedRect: fillFrame,
+            cornerRadius: max(0, cornerRadius - 1.0)
+        ).cgPath
+        softRimMaskLayer.fillColor = UIColor.clear.cgColor
+        softRimMaskLayer.strokeColor = UIColor.black.cgColor
+        softRimMaskLayer.lineWidth = 5.5
+
+        topGlintLayer.frame = CGRect(
+            x: 18,
+            y: 5.5,
+            width: max(0, bounds.width - 36),
+            height: 2.4
+        )
+        topGlintLayer.cornerRadius = topGlintLayer.bounds.height / 2
+
+        bottomGlintLayer.frame = CGRect(
+            x: 30,
+            y: bounds.height - 7.5,
+            width: max(0, bounds.width - 60),
+            height: 2.8
+        )
+        bottomGlintLayer.cornerRadius = bottomGlintLayer.bounds.height / 2
+
+        rightBloomLayer.frame = bounds
+        let rightBloomPath = UIBezierPath(
+            roundedRect: bounds.insetBy(dx: 2.5, dy: 2.5),
+            cornerRadius: max(0, cornerRadius - 2.5)
+        ).cgPath
+        rightBloomMaskLayer.path = rightBloomPath
+        rightBloomMaskLayer.fillColor = UIColor.clear.cgColor
+        rightBloomMaskLayer.strokeColor = UIColor.black.cgColor
+        rightBloomMaskLayer.lineWidth = 4
+
+        layer.shadowPath = UIBezierPath(
+            roundedRect: bounds.insetBy(dx: 4, dy: 3),
+            cornerRadius: max(0, cornerRadius - 3)
+        ).cgPath
     }
 }
 
