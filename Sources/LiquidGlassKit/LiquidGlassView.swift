@@ -290,6 +290,8 @@ final class LiquidGlassView: MTKView {
         // Make view transparent so we can see the effect
         isOpaque = false
         layer.isOpaque = false
+        backgroundColor = .clear
+        clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
 
         isPaused = false // Enable to manually control drawing via `draw(_:)`
 //        enableSetNeedsDisplay = true  // Allow setNeedsDisplay() to trigger draws
@@ -473,20 +475,40 @@ final class LiquidGlassView: MTKView {
         
         guard let drawable = currentDrawable,
               let renderPassDesc = currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else { return }
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+
+        guard let texture = backgroundTexture else {
+            renderTransparentFrame(
+                drawable: drawable,
+                renderPassDescriptor: renderPassDesc,
+                commandBuffer: commandBuffer
+            )
+            return
+        }
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else { return }
 
         encoder.setRenderPipelineState(LiquidGlassRenderer.shared.pipelineState)
         encoder.setFragmentBuffer(uniformsBuffer, offset: 0, index: 0)
-        
-        if let texture = backgroundTexture {
-            encoder.setFragmentTexture(texture, index: 0)
-        }
+        encoder.setFragmentTexture(texture, index: 0)
 
         // Draw fullscreen quad (vertices generated in vertex shader)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
 
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    private func renderTransparentFrame(
+        drawable: CAMetalDrawable,
+        renderPassDescriptor: MTLRenderPassDescriptor,
+        commandBuffer: MTLCommandBuffer
+    ) {
+        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].clearColor = clearColor
+        let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
+        encoder?.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }

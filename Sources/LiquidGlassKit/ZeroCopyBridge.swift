@@ -6,12 +6,14 @@
 //
 
 import CoreVideo
+import UIKit
 
 class ZeroCopyBridge {
     let device: MTLDevice
     var textureCache: CVMetalTextureCache?
     var pixelBuffer: CVPixelBuffer?
     var cvTexture: CVMetalTexture?
+    private let captureFallbackColor = UIColor.systemBackground.cgColor
 
     init(device: MTLDevice) {
         self.device = device
@@ -72,6 +74,8 @@ class ZeroCopyBridge {
             return nil
         }
 
+        context.setFillColor(captureFallbackColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         actions(context)
 
         // Get MTLTexture from the retained CVMetalTexture
