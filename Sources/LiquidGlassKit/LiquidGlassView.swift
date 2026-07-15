@@ -199,34 +199,41 @@ final class ShadowView: UIView {
 }
 
 final class LiquidGlassRenderer {
-    @MainActor static let shared = LiquidGlassRenderer()
+    /// nil 表示当前设备/环境不支持 Metal，LiquidGlass 效果将静默降级（显示透明）
+    @MainActor static let shared: LiquidGlassRenderer? = LiquidGlassRenderer()
 
     let device: MTLDevice
     let pipelineState: MTLRenderPipelineState
 
-    private init() {
+    private init?() {
         guard let device = MTLCreateSystemDefaultDevice() else {
-            fatalError("Metal not supported")
+            // 设备不支持 Metal（如部分模拟器），静默降级
+            return nil
         }
         self.device = device
 
+        let library: MTLLibrary
 #if SWIFT_PACKAGE
-        let library = try! device.makeDefaultLibrary(bundle: .module)
+        guard let lib = try? device.makeDefaultLibrary(bundle: .module) else { return nil }
+        library = lib
 #else
         let mainBundle = Bundle(for: LiquidGlassView.self)
-        let bundleURL = mainBundle.url(forResource: "LiquidGlassKitShaderResources", withExtension: "bundle")!
-        let library = try! device.makeDefaultLibrary(bundle: Bundle(url: bundleURL)!)
+        guard let bundleURL = mainBundle.url(forResource: "LiquidGlassKitShaderResources", withExtension: "bundle"),
+              let bundle = Bundle(url: bundleURL),
+              let lib = try? device.makeDefaultLibrary(bundle: bundle) else { return nil }
+        library = lib
 #endif
 
-        let vertexFunction = library.makeFunction(name: "fullscreenQuad")!
-        let fragmentFunction = library.makeFunction(name: "liquidGlassEffect")!
+        guard let vertexFunction = library.makeFunction(name: "fullscreenQuad"),
+              let fragmentFunction = library.makeFunction(name: "liquidGlassEffect") else { return nil }
 
         let pipelineDescriptor = MTLRenderPipelineDescriptor()
         pipelineDescriptor.vertexFunction = vertexFunction
         pipelineDescriptor.fragmentFunction = fragmentFunction
         pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm  // Match MTKView
 
-        self.pipelineState = try! device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+        guard let state = try? device.makeRenderPipelineState(descriptor: pipelineDescriptor) else { return nil }
+        self.pipelineState = state
     }
 }
 
@@ -258,7 +265,8 @@ final class LiquidGlassView: MTKView {
     init(_ liquidGlass: LiquidGlass) {
         self.liquidGlass = liquidGlass
 
-        super.init(frame: .zero, device: LiquidGlassRenderer.shared.device)
+        // renderer 为 nil 时（不支持 Metal），传 nil device，view 静默显示透明
+        super.init(frame: .zero, device: LiquidGlassRenderer.shared?.device)
         
         if liquidGlass.shadowOverlay {
             let shadowView = ShadowView()
@@ -278,12 +286,18 @@ final class LiquidGlassView: MTKView {
     }
 
     func setupMetal() {
-        guard let device else { return }
+        guard let device else {
+            // 无 Metal 支持，暂停渲染，view 保持透明
+            isPaused = true
+            return
+        }
 
-        commandQueue = device.makeCommandQueue()!
+        guard let queue = device.makeCommandQueue() else { isPaused = true; return }
+        commandQueue = queue
 
         // Uniforms buffer (update per frame)
-        uniformsBuffer = device.makeBuffer(length: MemoryLayout<LiquidGlass.ShaderUniforms>.stride, options: [])!
+        guard let buf = device.makeBuffer(length: MemoryLayout<LiquidGlass.ShaderUniforms>.stride, options: []) else { isPaused = true; return }
+        uniformsBuffer = buf
 
         zeroCopyBridge = .init(device: device)
 
@@ -468,6 +482,10 @@ final class LiquidGlassView: MTKView {
     }
 
     override func draw(_ rect: CGRect) {
+        // 无 Metal 支持时静默跳过
+        guard let renderer = LiquidGlassRenderer.shared,
+              let commandQueue else { return }
+
         // Auto-capture background from superview if enabled
         if autoCapture {
             captureBackground()
@@ -488,7 +506,7 @@ final class LiquidGlassView: MTKView {
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDesc) else { return }
 
-        encoder.setRenderPipelineState(LiquidGlassRenderer.shared.pipelineState)
+        encoder.setRenderPipelineState(renderer.pipelineState)
         encoder.setFragmentBuffer(uniformsBuffer, offset: 0, index: 0)
         encoder.setFragmentTexture(texture, index: 0)
 
